@@ -266,7 +266,7 @@ impl WindowService {
         #[cfg(not(feature = "production"))]
         let devtools_enabled = true;
 
-        let _window =
+        let builder =
             WebviewWindowBuilder::new(app_handle, "main", WebviewUrl::App("index.html".into()))
                 .data_directory(Self::get_webview_data_dir()?)
                 .title("Simprint")
@@ -277,10 +277,14 @@ impl WindowService {
                 .fullscreen(false)
                 .center()
                 .decorations(false)
-                .visible(false)
-                .drag_and_drop(false)
-                .devtools(devtools_enabled)
-                .build()?;
+                .visible(false);
+
+        // `drag_and_drop` 仅在 Windows target 上由 Tauri 提供（禁用 OLE 拖放），
+        // 在 macOS / Linux 上方法不存在，因此用 cfg 守护。
+        #[cfg(target_os = "windows")]
+        let builder = builder.drag_and_drop(false);
+
+        let _window = builder.devtools(devtools_enabled).build()?;
 
         log::trace!("主窗口已创建");
         Ok(())
@@ -293,7 +297,7 @@ impl WindowService {
             return Ok(());
         }
 
-        let _window = WebviewWindowBuilder::new(
+        let splashscreen_builder = WebviewWindowBuilder::new(
             app_handle,
             "splashscreen",
             WebviewUrl::App("splashscreen.html".into()),
@@ -304,9 +308,13 @@ impl WindowService {
         .inner_size(725.0, 475.0)
         .resizable(false)
         .center()
-        .visible(false)
-        .drag_and_drop(false)
-        .build()?;
+        .visible(false);
+
+        // 与 main window 同样原因，`drag_and_drop` 仅 Windows 可用。
+        #[cfg(target_os = "windows")]
+        let splashscreen_builder = splashscreen_builder.drag_and_drop(false);
+
+        let _window = splashscreen_builder.build()?;
 
         log::trace!("启动窗口已创建");
         Ok(())
@@ -327,16 +335,19 @@ impl WindowService {
         #[cfg(not(feature = "production"))]
         let devtools_enabled = true;
 
-        let window =
+        let syncer_builder =
             WebviewWindowBuilder::new(app_handle, "syncer", WebviewUrl::App("syncer.html".into()))
                 .data_directory(Self::get_webview_data_dir()?)
                 .title("同步器")
                 .inner_size(400.0, 600.0)
                 .resizable(true)
-                .decorations(false)
-                .drag_and_drop(false)
-                .devtools(devtools_enabled)
-                .build()?;
+                .decorations(false);
+
+        // 与 main / splashscreen 同样原因，`drag_and_drop` 仅 Windows 可用。
+        #[cfg(target_os = "windows")]
+        let syncer_builder = syncer_builder.drag_and_drop(false);
+
+        let window = syncer_builder.devtools(devtools_enabled).build()?;
 
         window.show()?;
         window.set_focus()?;

@@ -122,6 +122,44 @@ mod runtime_assets {
         });
 
         if let Err(error) = download_runtime_artifact(&latest_json_url, target_path) {
+            // 当 latest.json 缺少当前目标平台条目时（典型场景：在 macOS / Linux 上
+            // 跑 cargo check 而 latest.json 仅声明 Windows 平台），不再 panic 中断
+            // 构建脚本，而是发出警告并写入一个占位资源文件后跳过下载。
+            //
+            // 占位文件之所以必要，是因为 tauri-build 的 codegen 会校验
+            // tauri.conf.json 的 `bundle.resources` 中声明的路径必须存在；
+            // 否则 cargo check / clippy 也会失败在依赖 build script 的下游 crate。
+            //
+            // 这样允许：
+            // - macOS / Linux 开发者本地或 CI 上对 src-tauri 仅做 cargo check / clippy；
+            // - 跨平台编译验证在 latest.json 接收到对应平台条目之前就能进行。
+            //
+            // 影响范围：完整 tauri build 在 macOS / Linux 上仍然会因为占位文件
+            // 不是真正的 runtime 二进制而无法运行；这条路径是预期未支持的。
+            // 在 Windows 上，本分支不会被命中（latest.json 始终包含 Windows 条目），
+            // 行为与之前完全一致。
+            let target_triple = env::var("TARGET").unwrap_or_default();
+            let message = error.to_string();
+            if message.contains("does not contain target platform") {
+                println!(
+                    "cargo:warning=Skipping simprint-runtime download for target '{}' \
+                    (no entry in runtime latest.json). Writing placeholder so that \
+                    cargo check / clippy can proceed past tauri-build resource validation. \
+                    Tauri bundle will not produce a runnable artifact on this platform.",
+                    target_triple
+                );
+                // 写一个空的占位文件，满足 tauri-build 的资源存在性检查。
+                // 文件大小为 0，在 Windows 上不会被命中此分支，因此不会污染 Windows 包。
+                if let Err(write_error) = fs::write(target_path, []) {
+                    panic!(
+                        "[BUILD ERROR] Failed to write placeholder runtime resource at '{}': {}",
+                        target_path.display(),
+                        write_error
+                    );
+                }
+                return;
+            }
+
             panic!("failed to download simprint-runtime: {error}");
         }
     }
