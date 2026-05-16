@@ -1,0 +1,139 @@
+# tauri-build-mac-official — manual macOS bundle build
+#
+# - Targets only Apple Silicon arm64 (the macos-latest runner default at
+#   the time of writing). Intel x86_64-apple-darwin and Universal Binary
+#   builds are intentionally out of scope.
+# - No Apple Developer ID code signing or notarization is performed.
+#   The resulting .dmg is unsigned; end users must run
+#   `xattr -cr /Applications/<app>.app` (or equivalent) to bypass
+#   macOS Gatekeeper.
+# - No Cloudflare R2 upload is performed. No latest.json is generated.
+
+name: tauri-build-mac-official
+
+on:
+  workflow_dispatch:
+    inputs:
+      env_name:
+        description: "Frontend build mode (development/production/test)"
+        required: false
+        default: "production"
+
+jobs:
+  build:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+
+    env:
+      # 前端构建参数
+      # build.cjs reads ENV_NAME; default production
+      ENV_NAME: ${{ inputs.env_name || 'production' }}
+
+      # App config values
+      APP_SERVER_BASE_URL: ${{ secrets.APP_SERVER_BASE_URL }}
+      APP_SERVER_VERSION: ${{ secrets.APP_SERVER_VERSION }}
+      APP_SERVER_SECRET_KEY: ${{ secrets.APP_SERVER_SECRET_KEY }}
+      APP_UPDATER_CHECK_URL: ${{ secrets.APP_UPDATER_CHECK_URL }}
+      APP_UPDATER_LATEST_JSON_URL: ${{ secrets.APP_UPDATER_LATEST_JSON_URL }}
+      APP_RUNTIME_LATEST_JSON_URL: ${{ secrets.APP_RUNTIME_LATEST_JSON_URL }}
+      APP_UPDATER_TEMP_DIR: ${{ secrets.APP_UPDATER_TEMP_DIR }}
+      APP_WEBVIEW_DOWNLOAD_URL: ${{ secrets.APP_WEBVIEW_DOWNLOAD_URL }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Print runner & toolchain identification
+        shell: bash
+        run: |
+          echo "Runner: macos-latest"
+          uname -a
+          rustc -vV
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Prepare app config
+        shell: bash
+        env:
+          APP_SERVER_BASE_URL: ${{ env.APP_SERVER_BASE_URL }}
+          APP_SERVER_VERSION: ${{ env.APP_SERVER_VERSION }}
+          APP_SERVER_SECRET_KEY: ${{ env.APP_SERVER_SECRET_KEY }}
+          APP_UPDATER_CHECK_URL: ${{ env.APP_UPDATER_CHECK_URL }}
+          APP_UPDATER_LATEST_JSON_URL: ${{ env.APP_UPDATER_LATEST_JSON_URL }}
+          APP_RUNTIME_LATEST_JSON_URL: ${{ env.APP_RUNTIME_LATEST_JSON_URL }}
+          APP_UPDATER_TEMP_DIR: ${{ env.APP_UPDATER_TEMP_DIR }}
+          APP_WEBVIEW_DOWNLOAD_URL: ${{ env.APP_WEBVIEW_DOWNLOAD_URL }}
+        run: |
+          set -euo pipefail
+          cp src-tauri/config.example.toml src-tauri/config.production.toml
+
+          node <<'NODE'
+          const fs = require('fs');
+          const file = 'src-tauri/config.production.toml';
+          let content = fs.readFileSync(file, 'utf8');
+
+          function setValue(key, value) {
+            if (value == null) return;
+            if (String(value).trim() === '') return;
+            const escaped = String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+            const re = new RegExp('^(' + key + '\\s*=\\s*)".*"$', 'm');
+            content = content.replace(re, '$1"' + escaped + '"');
+          }
+
+          setValue('base_url',                process.env.APP_SERVER_BASE_URL);
+          setValue('version',                 process.env.APP_SERVER_VERSION);
+          setValue('secret_key',              process.env.APP_SERVER_SECRET_KEY);
+          setValue('check_url',               process.env.APP_UPDATER_CHECK_URL);
+          setValue('latest_json_url',         process.env.APP_UPDATER_LATEST_JSON_URL);
+          setValue('runtime_latest_json_url', process.env.APP_RUNTIME_LATEST_JSON_URL);
+          setValue('updater_temp_dir',        process.env.APP_UPDATER_TEMP_DIR);
+          setValue('downlaod_url',            process.env.APP_WEBVIEW_DOWNLOAD_URL);
+
+          fs.writeFileSync(file, content);
+          NODE
+
+      - name: Use fixed Tauri config
+        shell: bash
+        run: cp src-tauri/tauri.conf.fixed.json src-tauri/tauri.conf.json
+
+      - name: Prepare version from tag
+        run: node deploy/prepare-version.mjs
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GT_TOKEN || github.token }}
+          TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+          TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
+        with:
+          projectPath: .
+          args: --features production
+
+      - name: Upload bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: simprint-macos-bundle
+          path: |
+            src-tauri/target/release/bundle/macos/**
+            src-tauri/target/release/bundle/dmg/**
+          retention-days: 7
+          if-no-files-found: error

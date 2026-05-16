@@ -1,0 +1,74 @@
+# ci-mac — macOS validation workflow
+#
+# Mirrors ci.yml on macos-latest. Performs `cargo check` only.
+# Bundling, code signing, R2 upload, and latest.json generation are
+# intentionally out of scope for this validation surface.
+
+name: ci-mac
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/**"
+      - "deploy/**"
+      - "src/**"
+      - "src-tauri/**"
+      - "plugins/**"
+      - "index.html"
+      - "splashscreen.html"
+      - "vite.config.ts"
+      - "build.cjs"
+      - "package.json"
+      - "pnpm-lock.yaml"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/**"
+      - "deploy/**"
+      - "src/**"
+      - "src-tauri/**"
+      - "plugins/**"
+      - "index.html"
+      - "splashscreen.html"
+      - "vite.config.ts"
+      - "build.cjs"
+      - "package.json"
+      - "pnpm-lock.yaml"
+
+jobs:
+  check:
+    runs-on: macos-latest
+    env:
+      ENV_NAME: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Prepare app config
+        shell: bash
+        run: |
+          cp src-tauri/config.example.toml src-tauri/config.production.toml
+
+      - name: Build frontend
+        run: node build.cjs
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust check
+        working-directory: src-tauri
+        run: cargo check
